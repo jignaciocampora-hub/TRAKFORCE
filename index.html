@@ -12,6 +12,7 @@
   --left:#3FA7FF; --right:#FFD21F; --ok:#3DDC84; --warn:#FF8A3D; --bad:#FF5A5A;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 h1,h2,h3,.brand,.big{font-family:"Space Grotesk",system-ui,sans-serif}
 h1{font-size:26px;margin:0 0 4px}
@@ -98,7 +99,7 @@ th{color:var(--muted);font-weight:500}
   <div class="wrap">
     <button class="brand" data-action="home" aria-label="Ir a pacientes">
       <svg width="34" height="34" viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="9" fill="#FFD21F"/><g transform="translate(9 3) scale(.183)"><path d="M60 4 50 18h20Z" fill="#111315"/><rect x="56" y="16" width="8" height="14" fill="#111315"/><rect x="24" y="30" width="72" height="100" rx="8" fill="#111315"/><rect x="24" y="61" width="44" height="10" fill="#FFD21F"/><circle cx="68" cy="66" r="9" fill="#FFD21F"/><rect x="52" y="89" width="44" height="10" fill="#FFD21F"/><circle cx="52" cy="94" r="9" fill="#FFD21F"/><rect x="56" y="130" width="8" height="14" fill="#111315"/><path d="M60 156 50 142h20Z" fill="#111315"/></g></svg>
-      <span>Trak<span class="f">Force</span></span>
+      <span>Trak<span class="f">Force</span> <small style="font-size:11px;color:#A3AAB2;font-weight:500">v4</small></span>
     </button>
     <div class="spacer"></div>
     <button class="pill" data-action="sensor" id="sensorPill"><span class="dot" id="sensorDot"></span><span id="sensorTxt">Simulado</span></button>
@@ -479,6 +480,7 @@ function setStatus(t){ const s = $('#liveStatus'); if(s) s.textContent = t; }
 async function countdown(){ const n = DB.settings.countdown|0; for(let i=n;i>0;i--){ if(!live||live.stopped) return false; setStatus(i+'…'); beep(660,100); await wait(1000); } if(!live||live.stopped) return false; setStatus('¡Fuerza!'); beep(1046,250); return true; }
 const wait = ms => new Promise(r => { if(live) live.timeout = setTimeout(r, ms); else r(); });
 async function runTest(){
+  if(!live || live.running) return; live.running = true;
   const P = flow.params, p = patient(flow.pid);
   $('#bStart').hidden = true; $('#bTare').disabled = true; $('#bStop').hidden = false;
   const zb = ZONES[flow.zone].base; const sideF = flow.side==='L' ? (p._simL || (p._simL = .84 + Math.random()*.14)) : 1;
