@@ -179,7 +179,7 @@ const Sensor = {
   tare(){ if(this.kind==='ble'){ this.offset = 0; if(this.rx){ try{ this.rx.writeValue(new TextEncoder().encode('T')); }catch(e){} } return; } const n = Math.min(this.last.length, Math.max(1,Math.round(curHz()/2))); if(!n) return; const arr = this.last.slice(-n); this.offset = arr.reduce((a,b)=>a+b,0)/n; },
   startSim(){ this.stopAll(); this.kind='sim'; this.connected=true; this.offset = 0; const base = 12; let t = 0;
     this.timer = setInterval(()=>{ t += 1/HZ; let f = base + (Math.random()-.5)*3;
-      if(this.effort){ const e = this.effort, te = (performance.now()-this.effortT0)/1000; f += simForce(e, te); }
+      if(this.effort){ const e = this.effort, te = (performance.now()-this.effortT0)/1000; f += simForce(e, te) * (e.dir==='E' ? -1 : 1); }
       this.emit(f); }, 1000/HZ); updatePill(); },
   setEffort(profile){ this.effort = profile; this.effortT0 = performance.now(); },
   async connectBLE(){
@@ -225,7 +225,7 @@ function metrics(s, hz=HZ, opts={}){
   const tPeak = (ip - on) / hz;
   const failPct = (opts.failPct || 50)/100;
   let tFail = null; for(let i=ip;i<n;i++){ if(s[i] < failPct*peak){ tFail = (i - on)/hz; break; } }
-  const last1 = s.slice(Math.max(on, n - hz)); const lastMean = last1.reduce((a,b)=>a+b,0)/(last1.length||1);
+  let rel = n-1; for(let i=n-1;i>=ip;i--){ if(s[i] >= .5*peak){ rel = i; break; } } const last1 = s.slice(Math.max(on, rel - hz), Math.max(on+1, rel - Math.round(.2*hz))); const lastMean = last1.reduce((a,b)=>a+b,0)/(last1.length||1);
   const drop = peak > 0 ? Math.max(0, (peak - lastMean)/peak*100) : 0;
   let inBand = null; if(opts.target){ let k=0,c=0; for(let i=on;i<=end;i++){ c++; if(Math.abs(s[i]-opts.target) <= .05*opts.target) k++; } inBand = c ? k/c*100 : 0; }
   return {peak, mean, rfd100, rfd200, impulse, tPeak, tFail, drop, inBand, dur:(end-on)/hz};
@@ -339,7 +339,7 @@ VIEWS.paciente = () => {
     ${pairs.length?`<table style="margin-top:12px"><thead><tr><th>Fecha</th><th>Izq (${unitLbl()})</th><th>Der (${unitLbl()})</th><th>Asimetría</th></tr></thead><tbody>${pairs.map(r=>`<tr><td>${fDate(r.date)}</td><td>${fF(r.L)}</td><td>${fF(r.R)}</td><td><span class="asym"><span class="light" style="background:${asymColor(r.a)}"></span>${r.a.toFixed(1)} % · ${r.weak}</span></td></tr>`).join('')}</tbody></table>`:''}
   </div>
   <h2>Historial</h2>
-  <div class="list">${ev.map(e=>`<button class="item" data-action="openEval" data-id="${e.id}"><span class="chip ${e.side}">${SIDE_NAME[e.side]}</span><span style="flex:1"><b>${esc(e.exercise)}</b><br><span class="sub">${fDT(e.date)} · ${MODES[e.mode].name}</span></span><span style="text-align:right"><b>${fF(e.metrics.peak)} ${unitLbl()}</b><br><span class="sub">${p.weight?(e.metrics.peak/p.weight).toFixed(1)+' N/kg':''}</span></span></button>`).join('')}</div>`
+  <div class="list">${ev.map(e=>`<button class="item" data-action="openEval" data-id="${e.id}"><span class="chip ${e.side}">${SIDE_NAME[e.side]}</span><span style="flex:1"><b>${esc(e.exercise)}</b><br><span class="sub">${fDT(e.date)} · ${MODES[e.mode].name} · ${e.dir==='E'?'Empuje':'Tracción'}</span></span><span style="text-align:right"><b>${fF(e.metrics.peak)} ${unitLbl()}</b><br><span class="sub">${p.weight?(e.metrics.peak/p.weight).toFixed(1)+' N/kg':''}</span></span></button>`).join('')}</div>`
   : `<div class="empty card">Sin evaluaciones todavía. Tocá <b>Nueva evaluación</b> para empezar.</div>`}`;
 };
 function asymPairs(evs){
@@ -394,6 +394,7 @@ VIEWS.evalConfig = () => {
   const isGlobal = flow.zone === 'global';
   flow.side = flow.side || (isGlobal && /bilateral|scrum/i.test(flow.exercise) ? 'B' : null);
   flow.mode = flow.mode || 'tiempo';
+  flow.dir = flow.dir || defaultDir(flow.exercise);
   flow.params = Object.assign({dur:5, failPct:50, maxDur:60, reps:3, rest:60, pct:70, ref:null, keep:'mejor'}, flow.params||{});
   const best = bestPeak(p.id, flow.exercise, flow.side);
   const P = flow.params;
@@ -416,6 +417,10 @@ VIEWS.evalConfig = () => {
     </div>
     ${done.L||done.R?`<p class="muted small" style="margin:10px 0 0">✓ = ya evaluado hoy.</p>`:''}
   </div>
+  <div class="card" style="margin-bottom:12px"><h3>Sentido de la fuerza</h3>
+    <div class="seg" role="group" aria-label="Sentido"><button aria-pressed="${flow.dir==='T'}" data-action="dir" data-dir="T">Tracción (tirar)</button><button aria-pressed="${flow.dir==='E'}" data-action="dir" data-dir="E">Empuje (compresión)</button></div>
+    <p class="muted small" style="margin:10px 0 0">${flow.dir==='E'?'Montá la celda con placas de apoyo, no con cadenas.':'Celda colgada con argollas o cadenas.'}</p>
+  </div>
   <div class="card" style="margin-bottom:12px"><h3>Modo</h3>
     <div class="seg" role="group" aria-label="Modo">${Object.keys(MODES).map(m=>`<button aria-pressed="${flow.mode===m}" data-action="mode" data-mode="${m}">${MODES[m].name}</button>`).join('')}</div>
     <p class="muted small" style="margin:10px 0 14px">${MODES[flow.mode].desc}</p>
@@ -423,6 +428,7 @@ VIEWS.evalConfig = () => {
   </div>
   <button class="btn primary big" data-action="toTest" ${flow.side?'':'disabled'} style="width:100%">${flow.side?'Ir a evaluar':'Elegí el lado para continuar'}</button>`;
 };
+function defaultDir(ex){ const d = (DB.settings.exDir||{})[ex]; if(d) return d; return /scrum|press|extensión de codo|empuje/i.test(ex||'') ? 'E' : 'T'; }
 function bestPeak(pid, ex, side){ const ps = DB.evals.filter(e=>e.patientId===pid && e.exercise===ex && (!side || e.side===side)).map(e=>e.metrics.peak); return ps.length ? Math.max(...ps) : null; }
 function todaySides(pid, ex){ const r = {}; DB.evals.forEach(e=>{ if(e.patientId===pid && e.exercise===ex && sameDay(e.date, new Date())) r[e.side]=true; }); return r; }
 
@@ -436,7 +442,7 @@ VIEWS.evalTest = () => {
   return `
   <button class="back" data-action="cancelTest">← Configuración</button>
   <div class="row" style="margin-bottom:8px"><h1 style="margin:0">${esc(flow.exercise)}</h1><span class="chip ${flow.side}">${SIDE_NAME[flow.side]}</span></div>
-  <p class="muted" style="margin-top:0">${esc(p.name)} · ${MODES[flow.mode].name}${flow.mode==='tiempo'||flow.mode==='reps'||flow.mode==='objetivo'?' · '+P.dur+' s':''}${flow.mode==='reps'?' · '+P.reps+' intentos':''}${target?' · objetivo '+fF(target)+' '+unitLbl():''}</p>
+  <p class="muted" style="margin-top:0">${esc(p.name)} · ${flow.dir==='E'?'Empuje':'Tracción'} · ${MODES[flow.mode].name}${flow.mode==='tiempo'||flow.mode==='reps'||flow.mode==='objetivo'?' · '+P.dur+' s':''}${flow.mode==='reps'?' · '+P.reps+' intentos':''}${target?' · objetivo '+fF(target)+' '+unitLbl():''}</p>
   <div class="card">
     <div class="row" style="align-items:flex-end"><div><div class="big" id="liveVal" aria-live="off">0</div><div class="muted">${unitLbl()} · pico <b id="livePeak">—</b></div></div><div class="spacer"></div><div class="status" id="liveStatus" aria-live="polite">Listo</div></div>
     <canvas id="liveC" style="margin-top:12px" role="img" aria-label="Curva de fuerza en vivo"></canvas>
@@ -448,17 +454,20 @@ VIEWS.evalTest = () => {
       <button class="btn danger" data-action="stopTest" id="bStop" hidden>Detener</button>
       <button class="btn primary big" data-action="startTest" id="bStart">Iniciar</button>
     </div>
+    <div class="note" id="dirWarn" hidden style="margin-top:10px">La fuerza llega en negativo: ¿elegiste el sentido correcto? Volvé a Configuración y cambiá entre Tracción y Empuje.</div>
     <p class="muted small" style="margin:10px 0 0">Antes de cada intento: sin carga, tocá Tara. ${Sensor.kind==='sim'?'Estás en <b>modo simulado</b>: la curva es de ejemplo.':''}</p>
   </div>`;
 };
 function startLive(target){
   const c = $('#liveC');
   live = {buf:[], rec:null, attempts:[], target, peak:0, phase:'idle', stopped:false};
-  live.listener = v => { live.buf.push(v); if(live.buf.length > curHz()*5) live.buf.shift(); if(live.rec){ live.rec.push(v); } };
+  const sgn = flow.dir==='E' ? -1 : 1;
+  live.listener = v0 => { const v = v0*sgn; live.buf.push(v); if(live.buf.length > curHz()*5) live.buf.shift(); if(live.rec){ live.rec.push(v); } };
   Sensor.listeners.add(live.listener);
   const tick = () => { if(!live || live.stopped) return;
     const cur = live.buf.length ? live.buf.slice(-4).reduce((a,b)=>a+b,0)/Math.min(4,live.buf.length) : 0;
-    $('#liveVal').textContent = fF(Math.max(0,cur));
+    $('#liveVal').textContent = fF(cur);
+    const w = $('#dirWarn'); if(w) w.hidden = !(cur < -15);
     if(live.rec){ const pk = Math.max(0,...live.rec); $('#livePeak').textContent = fF(pk)+' '+unitLbl(); }
     const data = live.rec || live.buf;
     const tmax = live.rec ? Math.max(live.tmax||5, data.length/curHz()) : 5;
@@ -483,7 +492,7 @@ async function runTest(){
     live.tmax = flow.mode==='fallo' ? 15 : dur;
     live.rec = [];
     const peakSim = zb * sideF * (.93 + Math.random()*.14);
-    Sensor.setEffort({mode:flow.mode, peak:peakSim, hold:3 + Math.random()*5, decay:5 + Math.random()*4, target:live.target, endAt: flow.mode==='fallo' ? null : dur - .15});
+    Sensor.setEffort({dir:flow.dir, mode:flow.mode, peak:peakSim, hold:3 + Math.random()*5, decay:5 + Math.random()*4, target:live.target, endAt: flow.mode==='fallo' ? null : dur - .15});
     const t0 = performance.now();
     await new Promise(res => {
       const chk = () => { if(!live || live.stopped) return res();
@@ -512,7 +521,7 @@ function finishTest(){
   let best = all.reduce((a,b)=> b.m.peak > a.m.peak ? b : a, all[0]);
   let m = Object.assign({}, best.m);
   if(flow.mode==='reps' && P.keep==='promedio'){ ['peak','mean','rfd100','rfd200','impulse','tPeak'].forEach(k=> m[k] = all.reduce((s,x)=>s+(x.m[k]||0),0)/all.length); }
-  flow.result = {id:uid(), patientId:p.id, date:new Date().toISOString(), zone:flow.zone, exercise:flow.exercise, side:flow.side, mode:flow.mode, params:Object.assign({},P), target:live.target, samples:best.samples.map(v=>Math.round(v*10)/10), attempts:all.map(x=>({peak:x.m.peak, rfd100:x.m.rfd100})), metrics:m, source:Sensor.kind, hz};
+  flow.result = {id:uid(), patientId:p.id, date:new Date().toISOString(), zone:flow.zone, exercise:flow.exercise, side:flow.side, mode:flow.mode, params:Object.assign({},P), target:live.target, samples:best.samples.map(v=>Math.round(v*10)/10), attempts:all.map(x=>({peak:x.m.peak, rfd100:x.m.rfd100})), metrics:m, source:Sensor.kind, hz, dir:flow.dir};
   stopLive(); go('evalResultado');
 }
 
@@ -527,7 +536,7 @@ function resultBody(e, saved){
     asym = `<div class="card" style="margin-top:12px"><h3>Izquierdo vs derecho (hoy)</h3><div class="asym"><span class="light" style="background:${asymColor(pct)};width:28px;height:28px"></span><div><div class="big" style="font-size:40px">${pct.toFixed(1)} %</div><div class="muted">${asymText(pct)} · ${L<R?'izquierdo':'derecho'} más débil · Izq ${fF(L)} / Der ${fF(R)} ${u}</div></div></div></div>`; }
   const M = (k,v,sub) => `<div class="metric"><div class="k">${k}</div><div class="v">${v}</div>${sub?`<div class="k">${sub}</div>`:''}</div>`;
   return `
-  <div class="row" style="margin-bottom:8px"><h1 style="margin:0">${esc(e.exercise)}</h1><span class="chip ${e.side}">${SIDE_NAME[e.side]}</span>${e.source==='sim'?'<span class="chip">Simulado</span>':''}<span class="chip">${Math.round(e.hz||HZ)} Hz</span></div>
+  <div class="row" style="margin-bottom:8px"><h1 style="margin:0">${esc(e.exercise)}</h1><span class="chip ${e.side}">${SIDE_NAME[e.side]}</span>${e.source==='sim'?'<span class="chip">Simulado</span>':''}<span class="chip">${e.dir==='E'?'Empuje':'Tracción'}</span><span class="chip">${Math.round(e.hz||HZ)} Hz</span></div>
   <p class="muted" style="margin-top:0">${esc(p.name)} · ${fDT(e.date)} · ${MODES[e.mode].name}</p>
   <div class="card"><canvas id="resC" role="img" aria-label="Curva fuerza-tiempo"></canvas>
     <div class="legend" style="margin-top:8px">${other?`<span class="${other.side==='L'?'lL':'lR'}">${SIDE_NAME[other.side]}</span>`:''}<span class="${e.side==='L'?'lL':'lR'}">${SIDE_NAME[e.side]}</span>${e.target?'<span class="lT">Objetivo</span>':''}</div></div>
@@ -601,8 +610,8 @@ function exportModal(title, text, filename){
   <p class="muted small">Si la descarga no arranca en esta vista previa, usá Copiar y pegalo en Excel o Sheets.</p>`);
 }
 function csvPatient(pid){
-  const p = patient(pid); const head = ['paciente','fecha','zona','ejercicio','lado','modo','pico_N','pico_N_kg','media_N','tiempo_pico_s','rfd100_N_s','rfd200_N_s','impulso_Ns','tiempo_sostenido_s','dentro_objetivo_pct','fuente'];
-  const rows = evalsOf(pid).map(e=>[p.name, e.date, ZONES[e.zone]?.name, e.exercise, SIDE_NAME[e.side], MODES[e.mode].name, e.metrics.peak.toFixed(1), p.weight?(e.metrics.peak/p.weight).toFixed(2):'', e.metrics.mean.toFixed(1), e.metrics.tPeak.toFixed(3), e.metrics.rfd100.toFixed(0), e.metrics.rfd200.toFixed(0), e.metrics.impulse.toFixed(1), e.metrics.tFail!=null?e.metrics.tFail.toFixed(2):'', e.metrics.inBand!=null?e.metrics.inBand.toFixed(0):'', e.source]);
+  const p = patient(pid); const head = ['paciente','fecha','zona','ejercicio','lado','sentido','modo','pico_N','pico_N_kg','media_N','tiempo_pico_s','rfd100_N_s','rfd200_N_s','impulso_Ns','tiempo_sostenido_s','dentro_objetivo_pct','fuente'];
+  const rows = evalsOf(pid).map(e=>[p.name, e.date, ZONES[e.zone]?.name, e.exercise, SIDE_NAME[e.side], e.dir==='E'?'Empuje':'Tracción', MODES[e.mode].name, e.metrics.peak.toFixed(1), p.weight?(e.metrics.peak/p.weight).toFixed(2):'', e.metrics.mean.toFixed(1), e.metrics.tPeak.toFixed(3), e.metrics.rfd100.toFixed(0), e.metrics.rfd200.toFixed(0), e.metrics.impulse.toFixed(1), e.metrics.tFail!=null?e.metrics.tFail.toFixed(2):'', e.metrics.inBand!=null?e.metrics.inBand.toFixed(0):'', e.source]);
   return [head, ...rows].map(r=>r.map(c=>/[",;\n]/.test(String(c))?'"'+String(c).replace(/"/g,'""')+'"':c).join(',')).join('\n');
 }
 function reportModal(pid){
@@ -635,7 +644,7 @@ document.addEventListener('click', async ev => {
     case 'sensor':
       openModal(`<h2>Sensor</h2><p>Estado: <b>${Sensor.kind==='ble'?'Sensor TrakForce conectado':'Modo simulado'}</b></p>
       <div class="row"><button class="btn primary" data-action="bleConnect">Conectar sensor Bluetooth</button><button class="btn" data-action="simMode">Usar modo simulado</button></div>
-      <p class="muted small" style="margin-top:12px">El sensor aparece como <b>TrakForce</b>. En iPhone/iPad se usa desde la app Bluefy.</p><div class="row"><div class="spacer"></div><button class="btn ghost" data-action="closeModal">Cerrar</button></div>`); break;
+      <div class="metric" style="margin-top:12px"><div class="k">Lectura en vivo (con signo)</div><div class="v" id="modalLive">—</div><div class="k" id="modalHz"></div></div><p class="muted small" style="margin-top:12px">El sensor aparece como <b>TrakForce</b>. En iPhone/iPad se usa desde la app Bluefy.</p><div class="row"><div class="spacer"></div><button class="btn ghost" data-action="closeModal">Cerrar</button></div>`); break;
     case 'bleConnect': closeModal(); await Sensor.connectBLE(); break;
     case 'simMode': closeModal(); Sensor.startSim(); toast('Modo simulado'); break;
     case 'closeModal': closeModal(); break;
@@ -648,10 +657,11 @@ document.addEventListener('click', async ev => {
     case 'newEval': flow = {pid:id}; go('evalZona'); break;
     case 'zone': pickZone(el.dataset.zone); break;
     case 'backZona': go('evalZona'); break;
-    case 'exercise': flow.exercise = el.dataset.ex; flow.side = null; go('evalConfig'); break;
+    case 'exercise': flow.exercise = el.dataset.ex; flow.side = null; flow.dir = null; go('evalConfig'); break;
     case 'backEj': go('evalEjercicio'); break;
     case 'side': flow.side = el.dataset.side; render(); break;
     case 'mode': flow.mode = el.dataset.mode; render(); break;
+    case 'dir': flow.dir = el.dataset.dir; render(); break;
     case 'toTest': if(flow.mode==='objetivo' && !flow.params.ref && !bestPeak(flow.pid, flow.exercise, flow.side)){ toast('Cargá un máximo de referencia para el modo objetivo'); return; } go('evalTest'); break;
     case 'cancelTest': go('evalConfig'); break;
     case 'tare': Sensor.tare(); toast('Tara hecha'); break;
@@ -662,7 +672,7 @@ document.addEventListener('click', async ev => {
       else go('evalConfig');
       break;
     case 'skipRest': if(live && live.skip) live.skip(); break;
-    case 'saveEval': DB.evals.push(flow.result); save(); go('evalSaved', {id:flow.result.id}); break;
+    case 'saveEval': DB.evals.push(flow.result); DB.settings.exDir = DB.settings.exDir||{}; DB.settings.exDir[flow.result.exercise] = flow.result.dir; save(); go('evalSaved', {id:flow.result.id}); break;
     case 'repeat': go('evalTest'); break;
     case 'discard': go('evalConfig'); break;
     case 'otherSide': flow.side = el.dataset.side; go('evalTest'); break;
@@ -683,6 +693,7 @@ document.addEventListener('click', async ev => {
 document.addEventListener('keydown', e => { if(e.key === 'Escape' && $('#modalRoot').innerHTML) closeModal(); });
 window.addEventListener('resize', () => { if(['paciente','evalVer','evalResultado','evalSaved'].includes(view.name)) render(); });
 
+setInterval(()=>{ const m=document.getElementById('modalLive'); if(!m) return; const n=Sensor.last.length; if(!n){ m.textContent='sin datos'; return; } const v=Sensor.last[n-1]-Sensor.offset; m.textContent=fF(v)+' '+unitLbl(); const h=document.getElementById('modalHz'); if(h) h.textContent=(Sensor.kind==='ble'?'Sensor':'Simulado')+' · '+Math.round(Sensor.rate||0)+' Hz'; }, 150);
 Sensor.startSim();
 render();
 </script>
