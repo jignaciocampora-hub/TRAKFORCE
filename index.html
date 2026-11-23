@@ -99,7 +99,7 @@ th{color:var(--muted);font-weight:500}
   <div class="wrap">
     <button class="brand" data-action="home" aria-label="Ir a pacientes">
       <svg width="34" height="34" viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="9" fill="#FFD21F"/><g transform="translate(9 3) scale(.183)"><path d="M60 4 50 18h20Z" fill="#111315"/><rect x="56" y="16" width="8" height="14" fill="#111315"/><rect x="24" y="30" width="72" height="100" rx="8" fill="#111315"/><rect x="24" y="61" width="44" height="10" fill="#FFD21F"/><circle cx="68" cy="66" r="9" fill="#FFD21F"/><rect x="52" y="89" width="44" height="10" fill="#FFD21F"/><circle cx="52" cy="94" r="9" fill="#FFD21F"/><rect x="56" y="130" width="8" height="14" fill="#111315"/><path d="M60 156 50 142h20Z" fill="#111315"/></g></svg>
-      <span>Trak<span class="f">Force</span> <small style="font-size:11px;color:#A3AAB2;font-weight:500">v4</small></span>
+      <span>Trak<span class="f">Force</span> <small style="font-size:11px;color:#A3AAB2;font-weight:500">v6</small></span>
     </button>
     <div class="spacer"></div>
     <button class="pill" data-action="sensor" id="sensorPill"><span class="dot" id="sensorDot"></span><span id="sensorTxt">Simulado</span></button>
@@ -174,12 +174,13 @@ function beep(freq=880, ms=120){ try{ actx = actx || new (window.AudioContext||w
 
 /* ---------------- sensor ---------------- */
 const Sensor = {
-  kind:'sim', connected:false, offset:0, last:[], rate:HZ, _cnt:0, _t0:0, listeners:new Set(), timer:null, dev:null, rx:null,
+  kind:'sim', connected:false, offset:0, last:[], rate:HZ, _cnt:0, _t0:0, listeners:new Set(), timer:null, dev:null, rx:null, tx:null, gen:0,
   effort:null, effortT0:0,
+  resetRate(){ this._cnt=0; this._t0=0; this.rate=this.kind==='sim'?HZ:0; this.last=[]; },
   emit(raw){ const now=performance.now(); if(!this._t0) this._t0=now; this._cnt++; if(now-this._t0>=1000){ this.rate=this._cnt*1000/(now-this._t0); this._cnt=0; this._t0=now; } this.last.push(raw); if(this.last.length > HZ*6) this.last.shift(); const v = raw - this.offset; this.listeners.forEach(fn => fn(v)); },
   tare(){ if(this.kind==='ble'){ this.offset = 0; if(this.rx){ try{ this.rx.writeValue(new TextEncoder().encode('T')); }catch(e){} } return; } const n = Math.min(this.last.length, Math.max(1,Math.round(curHz()/2))); if(!n) return; const arr = this.last.slice(-n); this.offset = arr.reduce((a,b)=>a+b,0)/n; },
-  startSim(){ this.stopAll(); this.kind='sim'; this.connected=true; this.offset = 0; const base = 12; let t = 0;
-    this.timer = setInterval(()=>{ t += 1/HZ; let f = base + (Math.random()-.5)*3;
+  startSim(){ this.stopAll(); this.kind='sim'; this.connected=true; this.offset = 0; this.resetRate(); const base = 12; let t = 0; const my = ++this.gen;
+    this.timer = setInterval(()=>{ if(this.kind!=='sim' || this.gen!==my) return; t += 1/HZ; let f = base + (Math.random()-.5)*3;
       if(this.effort){ const e = this.effort, te = (performance.now()-this.effortT0)/1000; f += simForce(e, te) * (e.dir==='E' ? -1 : 1); }
       this.emit(f); }, 1000/HZ); updatePill(); },
   setEffort(profile){ this.effort = profile; this.effortT0 = performance.now(); },
@@ -187,19 +188,22 @@ const Sensor = {
     if(!navigator.bluetooth){ openModal(`<h2>Bluetooth no disponible acá</h2><p>Este navegador no permite Bluetooth. En iPhone o iPad abrí TrakForce desde <b>Bluefy</b> (gratis en la App Store) con la versión publicada en GitHub Pages. En Android o en la compu funciona con Chrome.</p><p class="muted small">Mientras tanto podés seguir en modo simulado.</p><div class="row"><button class="btn primary" data-action="closeModal">Entendido</button></div>`); return; }
     try{
       const dev = await navigator.bluetooth.requestDevice({filters:[{namePrefix:'TrakForce'}], optionalServices:[BLE_SERVICE]});
+      this.stopAll();
+      const my = ++this.gen;
       const srv = await (await dev.gatt.connect()).getPrimaryService(BLE_SERVICE);
       const tx = await srv.getCharacteristic(BLE_TX);
       try{ this.rx = await srv.getCharacteristic(BLE_RX); }catch(e){ this.rx = null; }
-      this.stopAll(); this.kind='ble'; this.dev = dev; this.connected = true; this.offset = 0;
-      tx.addEventListener('characteristicvaluechanged', ev => { const dv = ev.target.value; for(let i=0;i+4<=dv.byteLength;i+=4) this.emit(dv.getFloat32(i, true)); });
+      if(this.gen!==my) return;
+      this.kind='ble'; this.dev = dev; this.tx = tx; this.connected = true; this.offset = 0; this.resetRate();
+      tx.oncharacteristicvaluechanged = ev => { if(this.gen!==my) return; const dv = ev.target.value; for(let i=0;i+4<=dv.byteLength;i+=4) this.emit(dv.getFloat32(i, true)); };
       await tx.startNotifications();
-      dev.addEventListener('gattserverdisconnected', ()=>{ toast('Sensor desconectado. Vuelvo a modo simulado.'); this.startSim(); });
+      dev.ongattserverdisconnected = () => { if(this.gen!==my) return; this.kind='off'; this.connected=false; this.dev=null; updatePill(); toast('Sensor desconectado. Volvé a conectarlo.'); };
       updatePill(); toast('Sensor conectado');
-    }catch(e){ if(e && e.name !== 'NotFoundError') toast('No se pudo conectar: ' + (e.message||e)); }
+    }catch(e){ if(e && e.name !== 'NotFoundError') toast('No se pudo conectar: ' + (e.message||e)); updatePill(); }
   },
-  stopAll(){ clearInterval(this.timer); this.timer = null; if(this.dev && this.dev.gatt && this.dev.gatt.connected){ try{ this.dev.gatt.disconnect(); }catch(e){} } this.dev = null; this.connected = false; }
+  stopAll(){ this.gen++; clearInterval(this.timer); this.timer = null; if(this.tx){ this.tx.oncharacteristicvaluechanged = null; this.tx = null; } if(this.dev){ this.dev.ongattserverdisconnected = null; if(this.dev.gatt && this.dev.gatt.connected){ try{ this.dev.gatt.disconnect(); }catch(e){} } } this.dev = null; this.connected = false; this.kind='off'; }
 };
-function curHz(){ return Sensor.kind==='sim' ? HZ : Math.max(1, Math.round(Sensor.rate||10)); }
+function curHz(){ return Sensor.kind==='sim' ? HZ : Math.max(1, Math.round(Sensor.rate||11)); }
 function simForce(e, t){
   // e: {peak, mode, hold, decay, target, dur}
   const d = .25; if(t < d) return 0;
@@ -209,7 +213,7 @@ function simForce(e, t){
   if(e.endAt && t > e.endAt) f *= Math.exp(-(t-e.endAt)/.09);
   return f * (1 + (Math.random()-.5)*.02);
 }
-function updatePill(){ $('#sensorDot').classList.toggle('on', Sensor.kind==='ble'); $('#sensorTxt').textContent = Sensor.kind==='ble' ? 'Sensor conectado' : 'Simulado'; }
+function updatePill(){ const d=$('#sensorDot'); d.classList.toggle('on', Sensor.kind==='ble'); d.style.background = Sensor.kind==='off' ? 'var(--bad)' : ''; $('#sensorTxt').textContent = Sensor.kind==='ble' ? 'Sensor conectado' : Sensor.kind==='sim' ? 'Simulado' : 'Sin sensor'; }
 
 /* ---------------- métricas ---------------- */
 function metrics(s, hz=HZ, opts={}){
@@ -456,14 +460,14 @@ VIEWS.evalTest = () => {
       <button class="btn primary big" data-action="startTest" id="bStart">Iniciar</button>
     </div>
     <div class="note" id="dirWarn" hidden style="margin-top:10px">La fuerza llega en negativo: ¿elegiste el sentido correcto? Volvé a Configuración y cambiá entre Tracción y Empuje.</div>
-    <p class="muted small" style="margin:10px 0 0">Antes de cada intento: sin carga, tocá Tara. ${Sensor.kind==='sim'?'Estás en <b>modo simulado</b>: la curva es de ejemplo.':''}</p>
+    <p class="muted small" style="margin:10px 0 0">Antes de cada intento: sin carga, tocá Tara.</p>${Sensor.kind!=='ble'?'<div class="note" style="margin-top:10px"><b>'+(Sensor.kind==='sim'?'Modo simulado: la curva es de ejemplo, no de la celda.':'Sin sensor conectado.')+'</b> Tocá la pastilla de arriba para conectar TrakForce.</div>':''}
   </div>`;
 };
 function startLive(target){
   const c = $('#liveC');
-  live = {buf:[], rec:null, attempts:[], target, peak:0, phase:'idle', stopped:false};
+  live = {buf:[], raw:[], base:0, rec:null, attempts:[], target, peak:0, phase:'idle', stopped:false};
   const sgn = flow.dir==='E' ? -1 : 1;
-  live.listener = v0 => { const v = v0*sgn; live.buf.push(v); if(live.buf.length > curHz()*5) live.buf.shift(); if(live.rec){ live.rec.push(v); } };
+  live.listener = v0 => { live.raw.push(v0*sgn); if(live.raw.length > curHz()*3) live.raw.shift(); const v = v0*sgn - live.base; live.buf.push(v); if(live.buf.length > curHz()*5) live.buf.shift(); if(live.rec){ live.rec.push(v); } };
   Sensor.listeners.add(live.listener);
   const tick = () => { if(!live || live.stopped) return;
     const cur = live.buf.length ? live.buf.slice(-4).reduce((a,b)=>a+b,0)/Math.min(4,live.buf.length) : 0;
@@ -476,6 +480,7 @@ function startLive(target){
     live.raf = requestAnimationFrame(tick); };
   tick();
 }
+function autoZero(){ if(!live) return; const n=Math.min(live.raw.length, Math.max(3,Math.round(curHz()*0.6))); if(!n) return; const a=live.raw.slice(-n); live.base=a.reduce((x,y)=>x+y,0)/n; live.buf=[]; }
 function setStatus(t){ const s = $('#liveStatus'); if(s) s.textContent = t; }
 async function countdown(){ const n = DB.settings.countdown|0; for(let i=n;i>0;i--){ if(!live||live.stopped) return false; setStatus(i+'…'); beep(660,100); await wait(1000); } if(!live||live.stopped) return false; setStatus('¡Fuerza!'); beep(1046,250); return true; }
 const wait = ms => new Promise(r => { if(live) live.timeout = setTimeout(r, ms); else r(); });
@@ -489,6 +494,7 @@ async function runTest(){
     if(!live || live.stopped) return;
     if(nAtt>1) setStatus(`Intento ${a+1} de ${nAtt}`);
     await wait(600);
+    autoZero();
     if(!(await countdown())) return;
     const dur = flow.mode==='fallo' ? P.maxDur : P.dur;
     live.tmax = flow.mode==='fallo' ? 15 : dur;
@@ -644,7 +650,7 @@ document.addEventListener('click', async ev => {
     case 'home': go('pacientes'); break;
     case 'settings': go('ajustes'); break;
     case 'sensor':
-      openModal(`<h2>Sensor</h2><p>Estado: <b>${Sensor.kind==='ble'?'Sensor TrakForce conectado':'Modo simulado'}</b></p>
+      openModal(`<h2>Sensor</h2><p>Estado: <b>${Sensor.kind==='ble'?'Sensor TrakForce conectado':Sensor.kind==='sim'?'Modo simulado':'Sin sensor'}</b></p>
       <div class="row"><button class="btn primary" data-action="bleConnect">Conectar sensor Bluetooth</button><button class="btn" data-action="simMode">Usar modo simulado</button></div>
       <div class="metric" style="margin-top:12px"><div class="k">Lectura en vivo (con signo)</div><div class="v" id="modalLive">—</div><div class="k" id="modalHz"></div></div><p class="muted small" style="margin-top:12px">El sensor aparece como <b>TrakForce</b>. En iPhone/iPad se usa desde la app Bluefy.</p><div class="row"><div class="spacer"></div><button class="btn ghost" data-action="closeModal">Cerrar</button></div>`); break;
     case 'bleConnect': closeModal(); await Sensor.connectBLE(); break;
@@ -666,8 +672,8 @@ document.addEventListener('click', async ev => {
     case 'dir': flow.dir = el.dataset.dir; render(); break;
     case 'toTest': if(flow.mode==='objetivo' && !flow.params.ref && !bestPeak(flow.pid, flow.exercise, flow.side)){ toast('Cargá un máximo de referencia para el modo objetivo'); return; } go('evalTest'); break;
     case 'cancelTest': go('evalConfig'); break;
-    case 'tare': Sensor.tare(); toast('Tara hecha'); break;
-    case 'startTest': runTest(); break;
+    case 'tare': if(live){ autoZero(); } else Sensor.tare(); toast('Tara hecha'); break;
+    case 'startTest': if(Sensor.kind==='off'){ toast('No hay sensor: conectalo o elegí modo simulado.'); return; } runTest(); break;
     case 'stopTest':
       if(live && live.rec && live.rec.length > curHz()){ live.attempts.push(live.rec.slice()); live.rec = null; Sensor.setEffort(null); finishTest(); }
       else if(live && live.attempts.length){ Sensor.setEffort(null); finishTest(); }
